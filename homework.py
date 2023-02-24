@@ -1,18 +1,19 @@
+import logging
 import os
 import sys
 import time
-import logging
+from http import HTTPStatus
+from logging import StreamHandler
+
 import requests
 import telegram
+from dotenv import load_dotenv
 
 from exceptions import (
     InvalidApiResponseException,
     InvalidApiResponseHomeworkException,
     InvalidVerdictException,
 )
-from http import HTTPStatus
-from logging import StreamHandler
-from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -45,18 +46,23 @@ def check_tokens():
     for const in ('PRACTICUM_TOKEN', 'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID'):
         if not eval(const):
             logger.critical(
-                f'Отсутствует обязательная переменная окружения: \'{const}\'')
-            return False
-    return True
+                f'Отсутствует обязательная переменная окружения: "{const}"')
+            print('Программа принудительно остановлена.')
+            exit()
 
 
 def get_api_answer(timestamp):
     """Получения ответа от API."""
-    response = requests.get(
-        ENDPOINT,
-        headers=HEADERS,
-        params={'from_date': timestamp},
-    )
+    try:
+        response = requests.get(
+            ENDPOINT,
+            headers=HEADERS,
+            params={'from_date': timestamp},
+        )
+    except requests.RequestException:
+        raise InvalidApiResponseException(
+            f'Эндпоинт "{ENDPOINT}" недоступен. '
+        )
     if response.status_code != HTTPStatus.OK:
         raise InvalidApiResponseException(
             f'Эндпоинт "{ENDPOINT}" недоступен. '
@@ -67,8 +73,12 @@ def get_api_answer(timestamp):
 
 def check_response(response):
     """Проверка ответа API на соответствие документации."""
-    return (isinstance(response.get('homeworks'), list)
-            and isinstance(response.get('current_date'), int))
+    if not isinstance(response, dict):
+        raise TypeError('Ответ response должен быть словарем')
+    if not isinstance(response.get('homeworks'), list):
+        raise TypeError('Элемент homeworks должен быть списком')
+    if not isinstance(response.get('current_date'), int):
+        raise TypeError('Элемент current_date должен быть числом')
 
 
 def parse_status(homework):
@@ -98,8 +108,7 @@ def send_message(bot, message):
 
 def main():
     """Основная логика работы бота."""
-    if not check_tokens():
-        return print('Программа принудительно остановлена.')
+    check_tokens()
 
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
@@ -107,17 +116,14 @@ def main():
     while True:
         try:
             response = get_api_answer(timestamp)
-            if not check_response(response):
-                raise InvalidApiResponseException(
-                    f'Некорректный ответ API: {response}')
+            check_response(response)
             timestamp = response.get('current_date')
             homeworks = response.get('homeworks')
             if not homeworks:
                 logger.debug('Нет новых статусов')
-            else:
-                for homework in homeworks:
-                    message = parse_status(homework)
-                    send_message(bot, message)
+            for homework in homeworks:
+                message = parse_status(homework)
+                send_message(bot, message)
 
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
