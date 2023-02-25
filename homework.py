@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -8,6 +9,7 @@ from logging import StreamHandler
 import requests
 import telegram
 from dotenv import load_dotenv
+from telegram import TelegramError
 
 from exceptions import (
     InvalidApiResponseException,
@@ -21,7 +23,7 @@ PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-RETRY_PERIOD = 600
+RETRY_PERIOD = 3
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
@@ -43,12 +45,22 @@ logger.addHandler(handler)
 
 def check_tokens():
     """Проверка доступности переменных окружения."""
-    for const in ('PRACTICUM_TOKEN', 'TELEGRAM_TOKEN', 'TELEGRAM_CHAT_ID'):
-        if not eval(const):
-            logger.critical(
-                f'Отсутствует обязательная переменная окружения: "{const}"')
-            print('Программа принудительно остановлена.')
-            exit()
+    if not PRACTICUM_TOKEN:
+        logger.critical(
+            'Отсутствует обязательная переменная окружения: "PRACTICUM_TOKEN"'
+        )
+        exit()
+    if not TELEGRAM_TOKEN:
+        logger.critical(
+            'Отсутствует обязательная переменная окружения: "TELEGRAM_TOKEN"'
+        )
+        exit()
+    if not TELEGRAM_CHAT_ID:
+        logger.critical(
+            'Отсутствует обязательная переменная окружения: '
+            '"TELEGRAM_CHAT_ID"'
+        )
+        exit()
 
 
 def get_api_answer(timestamp):
@@ -61,14 +73,21 @@ def get_api_answer(timestamp):
         )
     except requests.RequestException:
         raise InvalidApiResponseException(
-            f'Эндпоинт "{ENDPOINT}" недоступен. '
+            f'Эндпоинт "{ENDPOINT}" недоступен.'
         )
     if response.status_code != HTTPStatus.OK:
         raise InvalidApiResponseException(
             f'Эндпоинт "{ENDPOINT}" недоступен. '
             f'Код ответа API: {response.status_code}'
         )
-    return response.json()
+    try:
+        response = response.json()
+    except json.decoder.JSONDecodeError:
+        raise InvalidApiResponseException(
+            f'Эндпоинт "{ENDPOINT}" вернул ответ, '
+            'в котором недекодируемый JSON'
+        )
+    return response
 
 
 def check_response(response):
@@ -99,7 +118,7 @@ def send_message(bot, message):
     """Отправка сообщения в чат."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-    except Exception as error:
+    except (TelegramError, Exception) as error:
         logger.error(
             f'Неудачная отправка сообщения "{message}". Ошибка: {error}')
     else:
@@ -113,6 +132,7 @@ def main():
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
 
+    last_message = ''
     while True:
         try:
             response = get_api_answer(timestamp)
@@ -128,7 +148,9 @@ def main():
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
             logger.error(message)
-            send_message(bot, message)
+            if message != last_message:
+                send_message(bot, message)
+            last_message = message
 
         time.sleep(RETRY_PERIOD)
 
